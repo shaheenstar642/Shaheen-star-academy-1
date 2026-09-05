@@ -1,0 +1,1109 @@
+const ACADEMY_GMAIL = "Shaheenstaracademy@gmail.com";
+
+const CLASS9_SUBJECTS={Science:['English','Urdu','Mathematics','Physics','Chemistry','Biology','Islamic Studies','Pakistan Studies'],Arts:['English','Urdu','General Mathematics','Islamic Studies','Pakistan Studies','Civics','Economics','Geography']};
+const DEFAULT_SUBJECTS=[...new Set([...CLASS9_SUBJECTS.Science,...CLASS9_SUBJECTS.Arts])];
+const SUPABASE_URL = 'https://aghtygwelcadtkcmstcg.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_5vZSqg4F3XQv4UVc_QPnQg_C07OBjmB';
+const SUPABASE_TABLE = 'academy_data';
+const SUPABASE_ROW_ID = 'main';
+const SUPABASE_REST = `${SUPABASE_URL}/rest/v1`;
+let supabaseOnline = false;
+let supabaseBusy = false;
+let supabaseLastError = '';
+let academyLoadedFromSupabase = false;
+
+const EMPTY_ACADEMY_DB={subjects:DEFAULT_SUBJECTS,books:[],seq:1002,ads:[{id:'AD-1',title:'Welcome to Shaheen Star Academy',text:'Admissions & academic excellence — discover your future with us.',image:'',link:'#admissions',active:true}],positionHolders:[],students:[{id:'SSA-1001',name:'Sample Student',className:'Class 10',group:'Science',phone:'',parent:'',photo:'',attendance:[],fees:[],tests:[]}],teachers:[],finance:[],holidays:[],leaveRequests:[],notices:[]};
+function normalizeAcademyDB(source){
+  const x=source&&typeof source==='object'?source:{};
+  const out=Object.assign({},EMPTY_ACADEMY_DB,x);
+  out.subjects=Array.isArray(x.subjects)&&x.subjects.length?x.subjects:DEFAULT_SUBJECTS.slice();
+  out.books=Array.isArray(x.books)?x.books:[]; out.teachers=Array.isArray(x.teachers)?x.teachers:[]; out.finance=Array.isArray(x.finance)?x.finance:[];
+  out.holidays=Array.isArray(x.holidays)?x.holidays:[]; out.leaveRequests=Array.isArray(x.leaveRequests)?x.leaveRequests:[]; out.notices=Array.isArray(x.notices)?x.notices:[];
+  out.students=Array.isArray(x.students)?x.students:[]; out.ads=Array.isArray(x.ads)?x.ads:[]; out.positionHolders=Array.isArray(x.positionHolders)?x.positionHolders:[]; out.seq=Number(x.seq)||1002; out.customClasses=Array.isArray(x.customClasses)?x.customClasses:[]; out.settings=(x.settings&&typeof x.settings==='object')?x.settings:{academyName:'Shaheen Star Academy',session:'2026-27'};
+  out.students.forEach(st=>{if(!Array.isArray(st.attendance))st.attendance=[];if(!Array.isArray(st.fees))st.fees=[];if(!Array.isArray(st.tests))st.tests=[];});
+  return out;
+}
+let db=normalizeAcademyDB(EMPTY_ACADEMY_DB);
+
+/* Supabase publishable keys belong in the apikey header. They are NOT JWTs,
+   so do not send sb_publishable_* as Authorization: Bearer. */
+function supabaseHeaders(extra={}){
+  return Object.assign({'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},extra);
+}
+function setDBStatus(text,ok){
+  let el=document.getElementById('dbStatus');
+  if(!el){el=document.createElement('div');el.id='dbStatus';el.style.cssText='position:fixed;left:12px;bottom:12px;z-index:10000;padding:9px 12px;border-radius:12px;background:#fff;box-shadow:0 10px 30px #06285f22;font:700 12px Inter,Arial,sans-serif;max-width:340px';document.body.appendChild(el);}
+  el.textContent=text;el.style.color=ok?'#15733d':'#8a2c2c';el.style.border=`1px solid ${ok?'#bfe5cd':'#f0c5c5'}`;
+  let t=document.getElementById('dbStatusText');if(t)t.innerHTML='<b>Database:</b> '+text;
+}
+async function supabaseLoad(){
+  try{
+    setDBStatus('⏳ Connecting to Supabase…',true);
+    const url=`${SUPABASE_REST}/${SUPABASE_TABLE}?id=eq.${encodeURIComponent(SUPABASE_ROW_ID)}&select=id,data`;
+    const r=await fetch(url,{method:'GET',headers:supabaseHeaders(),cache:'no-store'});
+    const body=await r.text();
+    if(!r.ok) throw new Error(`HTTP ${r.status}: ${body}`);
+    const rows=body?JSON.parse(body):[];
+    if(Array.isArray(rows)&&rows[0]&&rows[0].data){
+      const raw=rows[0].data;
+      db=normalizeAcademyDB(raw);
+      academyLoadedFromSupabase=true;supabaseOnline=true;supabaseLastError='';
+      setDBStatus('✓ Supabase database connected',true);renderAll();
+      if(!raw || typeof raw!=='object' || !Array.isArray(raw.students) || !Array.isArray(raw.books) || !Array.isArray(raw.finance) || !Array.isArray(raw.teachers) || !Array.isArray(raw.holidays) || !Array.isArray(raw.leaveRequests) || !Array.isArray(raw.notices) || !Array.isArray(raw.customClasses)){
+        await supabaseSave(true,true);
+      }
+      return true;
+    }
+    /* First run: create the single academy record in Supabase. */
+    const created=await supabaseSave(true,true);
+    if(!created) throw new Error('academy_data row was not found and could not be created.');
+    academyLoadedFromSupabase=true;supabaseOnline=true;setDBStatus('✓ Supabase database connected',true);return true;
+  }catch(e){
+    supabaseOnline=false;academyLoadedFromSupabase=false;supabaseLastError=String(e.message||e);
+    setDBStatus('✕ Supabase connection failed — '+supabaseLastError,false);console.error('Supabase load failed:',e);return false;
+  }
+}
+async function supabaseSave(silent=false,force=false){
+  if(!force&&!academyLoadedFromSupabase){
+    setDBStatus('⚠ Supabase is not connected — data was not saved',false);return false;
+  }
+  try{
+    supabaseBusy=true;
+    const payload={id:SUPABASE_ROW_ID,data:db,updated_at:new Date().toISOString()};
+    const r=await fetch(`${SUPABASE_REST}/${SUPABASE_TABLE}?on_conflict=id`,{method:'POST',headers:supabaseHeaders({'Prefer':'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify(payload)});
+    const body=await r.text();
+    if(!r.ok) throw new Error(`HTTP ${r.status}: ${body}`);
+    supabaseOnline=true;supabaseLastError='';
+    if(!silent)setDBStatus('✓ Saved to Supabase',true);
+    return true;
+  }catch(e){
+    supabaseOnline=false;supabaseLastError=String(e.message||e);console.error('Supabase save failed:',e);
+    if(!silent)setDBStatus('✕ Supabase save failed — '+supabaseLastError,false);
+    return false;
+  }finally{supabaseBusy=false;}
+}
+function saveDB(){db=normalizeAcademyDB(db);renderAll();void supabaseSave();}
+async function initSupabaseAcademy(){await supabaseLoad();}
+function tab(id,btn){document.querySelectorAll('.portal .box').forEach(x=>x.classList.add('hidden'));document.getElementById(id).classList.remove('hidden');document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));btn.classList.add('active')}
+function adminTab(id,btn){document.querySelectorAll('.admin-page').forEach(x=>x.classList.add('hidden'));document.getElementById(id).classList.remove('hidden');document.querySelectorAll('.admin-nav button').forEach(x=>x.classList.remove('active'));btn.classList.add('active');renderAll()}
+function adminLogin(){if(document.getElementById('auser').value==='1122'&&document.getElementById('apass').value==='ahj'){document.getElementById('loginBox').classList.add('hidden');document.getElementById('adminDashboard').classList.remove('hidden');renderAll()}else{document.getElementById('aresult')?.remove();alert('Invalid username or password.')}}
+function student(){let n=document.getElementById('sname').value.trim();let c=document.getElementById('scode').value.trim();let st=db.students.find(x=>(c&&x.id===c)||(!c&&x.name.toLowerCase()===n.toLowerCase()));if(!st){document.getElementById('sresult').innerHTML='<b>Student record not found.</b><br>Please check the Student Name or Student Code.';return}let present=st.attendance.filter(a=>a.status==='Present').length, absent=st.attendance.filter(a=>a.status==='Absent').length, leave=st.attendance.filter(a=>a.status==='Leave').length,total=st.attendance.length;let rate=total?Math.round(present/total*100):0;let tests=st.tests.map(t=>{let g=getTestGrade(t.marks,t.total);return `<tr><td>${t.name}</td><td>${t.subject}</td><td><b>${t.marks}/${t.total}</b></td><td>${g.percentage}%</td><td><b>${g.grade}</b></td></tr>`}).join('')||'<tr><td colspan="5">No test results yet.</td></tr>';document.getElementById('sresult').innerHTML=`<h3>${st.name}</h3><p><b>Class:</b> ${st.className}<br><b>Student Code:</b> ${st.id}<br><b>Attendance:</b> ${rate}%<br><b>Absences:</b> ${absent}<br><b>Approved Leave:</b> ${leave}</p><h4>Test Results</h4><div class="admin-table"><table><tr><th>Test</th><th>Subject</th><th>Marks</th><th>Percentage</th><th>Grade</th></tr>${tests}</table></div>`}
+function addStudent(){let editId=document.getElementById('editStudentId')?.value||'',name=document.getElementById('newStudentName').value.trim(),cl=document.getElementById('newStudentClass').value.trim(),group=document.getElementById('newStudentGroup').value,phone=document.getElementById('newStudentPhone').value.trim(),parent=document.getElementById('newStudentParent').value.trim(),photo=document.getElementById('newStudentPhoto').value.trim();if(!name||!cl)return alert('Please enter Student Name and Class.');let st=editId?db.students.find(x=>x.id===editId):null;if(st){Object.assign(st,{name,className:cl,group,phone,parent,photo});}else{let id='SSA-'+db.seq++;db.students.push({id,name,className:cl,group,phone,parent,photo,subjects:[],attendance:[],fees:[],tests:[]});}['newStudentName','newStudentClass','newStudentPhone','newStudentParent','newStudentPhoto'].forEach(id=>document.getElementById(id).value='');document.getElementById('editStudentId').value='';saveDB();}
+function editStudent(id){let s=db.students.find(x=>x.id===id);if(!s)return;document.getElementById('editStudentId').value=s.id;document.getElementById('newStudentName').value=s.name;document.getElementById('newStudentClass').value=s.className;document.getElementById('newStudentGroup').value=s.group||'Science';document.getElementById('newStudentPhone').value=s.phone||'';document.getElementById('newStudentParent').value=s.parent||'';document.getElementById('newStudentPhoto').value=s.photo||'';document.getElementById('studentSaveBtn').textContent='Update Student';}
+function deleteStudent(id){if(!confirm('Delete this student and all linked records?'))return;db.students=db.students.filter(x=>x.id!==id);saveDB();}
+function addSubject(){let x=document.getElementById('newSubject').value.trim(),g=document.getElementById('newSubjectGroup').value;if(x){db.subjects.push({name:x,group:g});document.getElementById('newSubject').value='';saveDB()}}
+function editSubject(i){let s=db.subjects[i],n=prompt('Edit subject name',typeof s==='string'?s:s.name);if(n){if(typeof s==='string')db.subjects[i]={name:n,group:'Science'};else s.name=n;saveDB()}}
+function deleteSubject(i){if(confirm('Delete subject?')){db.subjects.splice(i,1);saveDB()}}
+function addBook(){let n=document.getElementById('newBook').value.trim(),g=document.getElementById('newBookGroup').value;if(n){db.books.push({id:'BOOK-'+Date.now(),name:n,group:g});document.getElementById('newBook').value='';saveDB()}}
+function editBook(i){let b=db.books[i],n=prompt('Edit book name',b.name);if(n){b.name=n;saveDB()}}
+function deleteBook(i){if(confirm('Delete book?')){db.books.splice(i,1);saveDB()}}
+function markAttendance(){
+  let id=document.getElementById('attendanceStudent').value,
+      st=db.students.find(x=>x.id===id),
+      date=document.getElementById('attendanceDate').value,
+      time=document.getElementById('attendanceTime').value,
+      status=document.getElementById('attendanceStatus').value;
+  if(!st||!date||!time)return alert('Please select student, date and time.');
+  st.attendance.push({date,time,status});
+  saveDB();
+  if(status==='Absent'||status==='Leave'){
+    let msg=encodeURIComponent(status==='Absent'
+      ? `Dear Parent, ${st.name} (${st.className}) was absent from Shaheen Star Academy on ${date} at ${time}. Please contact the academy if required.`
+      : `Dear Parent, ${st.name} (${st.className}) is recorded on approved leave from Shaheen Star Academy on ${date}.`);
+    let phone=(st.phone||'').replace(/\D/g,'');
+    document.getElementById('attendanceMessage').innerHTML=phone
+      ? `<div class="result" style="background:#eef9f2;color:#165c35"><b>${status} Notification Ready</b><br>${st.name} was marked ${status.toLowerCase()}.<br><a class="btn success-btn" target="_blank" rel="noopener" href="https://wa.me/${phone}?text=${msg}">Open WhatsApp</a></div>`
+      : `<div class="result" style="background:#fff7ed;color:#7c2d12"><b>${status} recorded</b><br>No parent WhatsApp number is saved for ${st.name}. Add it from Students.</div>`;
+  }else{
+    document.getElementById('attendanceMessage').innerHTML='<div class="result"><b>Attendance saved.</b></div>';
+  }
+}
+function saveFee(){let id=document.getElementById('feeStudent').value,st=db.students.find(x=>x.id===id),amount=Number(document.getElementById('feeAmount').value||0),due=document.getElementById('feeDueDate').value,status=document.getElementById('feeStatus').value;if(!st||!amount||!due)return alert('Please complete all fee fields.');st.fees.push({amount,due,status,date:new Date().toISOString().slice(0,10)});saveDB()}
+function getTestGrade(marks,total){
+  marks=Number(marks)||0; total=Number(total)||0;
+  if(total<=0)return {percentage:0,grade:'—'};
+  let p=Math.round((marks/total)*100);
+  let grade=p>=90?'A+':p>=80?'A':p>=70?'B':p>=60?'C':p>=50?'D':'F';
+  return {percentage:p,grade};
+}
+function saveTest(){let id=document.getElementById('testStudent').value,st=db.students.find(x=>x.id===id),name=document.getElementById('testName').value.trim(),subject=document.getElementById('testSubject').value.trim(),total=Number(document.getElementById('testTotal').value),marks=Number(document.getElementById('testMarks').value);if(!st||!name||!subject||!total||marks<0||marks>total)return alert('Please enter valid test details and marks.');st.tests.push({name,subject,total,marks});saveDB()}
+function saveFinance(){let type=document.getElementById('financeType').value,description=document.getElementById('financeDescription').value.trim(),amount=Number(document.getElementById('financeAmount').value||0);if(!description||!amount)return alert('Please enter description and amount.');db.finance.push({type,description,amount,date:new Date().toISOString().slice(0,10)});saveDB()}
+function addTeacher(){let name=document.getElementById('teacherName').value.trim(),subject=document.getElementById('teacherSubject').value.trim(),phone=document.getElementById('teacherPhone').value.trim();if(!name||!subject)return alert('Please enter teacher name and subject.');db.teachers.push({name,subject,phone,attendance:[]});saveDB()}
+function opts(list){return list.map(x=>`<option value="${x.id}">${x.name} — ${x.className}</option>`).join('')}
+function renderAll(){let sel=['attendanceStudent','feeStudent','testStudent'];sel.forEach(id=>{let e=document.getElementById(id);if(e)e.innerHTML=opts(db.students)});let now=new Date();let d=now.toISOString().slice(0,10),t=now.toTimeString().slice(0,5);let ad=document.getElementById('attendanceDate'),at=document.getElementById('attendanceTime');if(ad&&!ad.value)ad.value=d;if(at&&!at.value)at.value=t;document.getElementById('totalStudents').textContent=db.students.length;let all=db.students.flatMap(s=>s.attendance),present=all.filter(a=>a.status==='Present').length;document.getElementById('attendanceRate').textContent=(all.length?Math.round(present/all.length*100):0)+'%';let paid=db.students.flatMap(s=>s.fees).filter(f=>f.status==='Paid').reduce((a,f)=>a+f.amount,0);document.getElementById('feeCollected').textContent='Rs '+paid.toLocaleString();let income=db.finance.filter(x=>x.type==='Income').reduce((a,x)=>a+x.amount,0)+paid,expense=db.finance.filter(x=>x.type==='Expense').reduce((a,x)=>a+x.amount,0);document.getElementById('financeSummary').innerHTML=`Income: Rs ${income.toLocaleString()}<br>Expenses: Rs ${expense.toLocaleString()}<br>Net: Rs ${(income-expense).toLocaleString()}`;let today=all.filter(a=>a.date===d);document.getElementById('todayAttendance').textContent=today.length?`${today.filter(a=>a.status==='Present').length} Present • ${today.filter(a=>a.status==='Absent').length} Absent • ${today.filter(a=>a.status==='Leave').length} Leave`:'No attendance recorded today.';let pending=db.students.flatMap(s=>s.fees.map(f=>({...f,student:s}))).filter(f=>f.status==='Pending');document.getElementById('feeAlerts').textContent=pending.length?`${pending.length} pending fee record(s).`:'No pending fee alerts.';document.getElementById('studentTable').innerHTML='<div class="admin-table"><table><tr><th>Roll Number</th><th>Student Name</th><th>Class</th><th>Group</th><th>Parent</th><th>Attendance</th><th>Actions</th></tr>'+db.students.map(s=>{let a=s.attendance,p=a.filter(x=>x.status==='Present').length;return `<tr><td>${s.id}</td><td>${s.name}</td><td>${s.className}</td><td>${s.group||'—'}</td><td>${s.parent||'—'}</td><td>${a.length?Math.round(p/a.length*100):0}%</td><td><button class="editBtn" onclick="editStudent('${s.id}')">Edit</button><button class="delBtn" onclick="deleteStudent('${s.id}')">Delete</button>${s.phone?`<button class="msg-btn" onclick="openStudentWhatsApp('${s.id}','general')">WhatsApp</button>`:`<button class="small-btn" disabled>No WhatsApp</button>`}</td></tr>`}).join('')+'</table></div>';document.getElementById('subjectTable').innerHTML='<div class="admin-table"><h4>Subjects — Add / Edit / Delete</h4><table><tr><th>Group</th><th>Subject</th><th>Actions</th></tr>'+db.subjects.map((x,i)=>{let o=typeof x==='string'?{name:x,group:'Science'}:x;return `<tr><td>${o.group||'Science'}</td><td>${o.name}</td><td><button class="editBtn" onclick="editSubject(${i})">Edit</button><button class="delBtn" onclick="deleteSubject(${i})">Delete</button></td></tr>`}).join('')+'</table></div>';document.getElementById('bookTable').innerHTML='<div class="admin-table"><h4>Books — Add / Edit / Delete</h4><table><tr><th>Group</th><th>Book</th><th>Actions</th></tr>'+db.books.map((b,i)=>`<tr><td>${b.group}</td><td>${b.name}</td><td><button class="editBtn" onclick="editBook(${i})">Edit</button><button class="delBtn" onclick="deleteBook(${i})">Delete</button></td></tr>`).join('')+'</table></div>';document.getElementById('attendanceTable').innerHTML='<div class="admin-table"><table><tr><th>Student</th><th>Date</th><th>Time</th><th>Status</th><th>Message</th></tr>'+db.students.flatMap(s=>s.attendance.map(a=>`<tr><td>${s.name}</td><td>${a.date}</td><td>${a.time}</td><td>${a.status}</td><td>${a.status==='Absent'||a.status==='Leave'?`<button class="msg-btn" onclick="openStudentWhatsApp('${s.id}','attendance')">WhatsApp</button>`:`—`}</td></tr>`)).join('')+'</table></div>';document.getElementById('feeTable').innerHTML='<div class="admin-table"><table><tr><th>Student</th><th>Amount</th><th>Due Date</th><th>Status</th><th>Message</th></tr>'+db.students.flatMap(s=>s.fees.map(f=>`<tr><td>${s.name}</td><td>Rs ${f.amount.toLocaleString()}</td><td>${f.due}</td><td>${f.status}</td><td>${s.phone?`<button class="msg-btn" onclick="openStudentWhatsApp('${s.id}','fee')">WhatsApp</button>`:`—`}</td></tr>`)).join('')+'</table></div>';document.getElementById('testTable').innerHTML='<div class="admin-table"><table><tr><th>Student</th><th>Test</th><th>Subject</th><th>Marks / Total</th><th>Percentage</th><th>Grade</th><th>Actions</th></tr>'+db.students.flatMap(s=>s.tests.map(t=>{let g=getTestGrade(t.marks,t.total);return `<tr><td>${s.name}</td><td>${t.name}</td><td>${t.subject}</td><td><b>${t.marks}/${t.total}</b></td><td>${g.percentage}%</td><td><b>${g.grade}</b></td><td><button class="delBtn" onclick="deleteTest('${s.id}',${s.tests.indexOf(t)})">Delete</button></td></tr>`})).join('')+'</table></div>';document.getElementById('financeTable').innerHTML='<div class="admin-table"><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Actions</th></tr>'+db.finance.map(f=>`<tr><td>${f.date}</td><td>${f.type}</td><td>${f.description}</td><td>Rs ${f.amount.toLocaleString()}</td><td><button class="delBtn" onclick="deleteFinance(${db.finance.indexOf(f)})">Delete</button></td></tr>`).join('')+'</table></div>';document.getElementById('teacherTable').innerHTML='<div class="admin-table"><table><tr><th>Teacher Name</th><th>Subject</th><th>WhatsApp</th><th>Actions</th></tr>'+db.teachers.map(t=>`<tr><td>${t.name}</td><td>${t.subject}</td><td>${t.phone||'—'}</td><td><button class="delBtn" onclick="deleteTeacher(${db.teachers.indexOf(t)})">Delete</button></td></tr>`).join('')+'</table></div>'}
+
+function normalizePhone(p){
+  let x=(p||'').replace(/\D/g,'');
+  if(!x)return '';
+  if(x.startsWith('0'))x='92'+x.slice(1);
+  if(x.startsWith('3')&&x.length===10)x='92'+x;
+  return x;
+}
+function waMessage(st,type){
+  let today=new Date().toISOString().slice(0,10);
+  if(type==='fee') return `Dear Parent, this is a friendly reminder regarding the pending fee of ${st.name} (${st.className}) at Shaheen Star Academy. Please contact the academy if you need any assistance.`;
+  if(type==='attendance'){
+    let a=(st.attendance||[]).slice().reverse().find(x=>x.status==='Absent'||x.status==='Leave');
+    if(a&&a.status==='Leave') return `Dear Parent, ${st.name} (${st.className}) is recorded on leave at Shaheen Star Academy on ${a.date}.`;
+    return `Dear Parent, ${st.name} (${st.className}) was absent from Shaheen Star Academy on ${a?a.date:today}${a&&a.time?' at '+a.time:''}. Please contact the academy if required.`;
+  }
+  return `Assalam-o-Alaikum. This is a message from Shaheen Star Academy regarding ${st.name} (${st.className}). Please contact the academy if you need any assistance.`;
+}
+function openWhatsAppForStudents(list,type,label){
+  let valid=list.filter(s=>normalizePhone(s.phone));
+  let status=document.getElementById('waStatus'), box=document.getElementById('waList');
+  if(!valid.length){status.innerHTML=`<b>No WhatsApp numbers found.</b> Please add parent WhatsApp numbers in Students.`;box.innerHTML='';return;}
+  box.innerHTML=valid.map(s=>`<div class="wa-item"><div><b>${s.name}</b><br><small>${s.className} • ${s.phone}</small></div><button class="btn success-btn" onclick="openStudentWhatsApp('${s.id}','${type}')">WhatsApp</button></div>`).join('');
+  status.innerHTML=`<b>${valid.length} parent chat(s) ready.</b> WhatsApp opens with the message pre-filled. For safety, WhatsApp may require the final Send action in each chat.`;
+  valid.forEach((s,i)=>{
+    setTimeout(()=>{
+      let phone=normalizePhone(s.phone), msg=encodeURIComponent(waMessage(s,type));
+      let w=window.open(`https://wa.me/${phone}?text=${msg}`,'_blank','noopener');
+      if(!w && i===0) alert('Your browser blocked multiple pop-up windows. Use the WhatsApp buttons in the list to open them one by one.');
+    },i*450);
+  });
+}
+function openStudentWhatsApp(id,type){
+  let st=db.students.find(x=>x.id===id);
+  if(!st||!normalizePhone(st.phone))return alert('Please add a valid parent WhatsApp number for this student.');
+  let phone=normalizePhone(st.phone),msg=encodeURIComponent(waMessage(st,type));
+  window.open(`https://wa.me/${phone}?text=${msg}`,'_blank','noopener');
+}
+function openAbsentWhatsApp(){
+  let today=new Date().toISOString().slice(0,10);
+  let list=db.students.filter(s=>(s.attendance||[]).some(a=>a.date===today&&a.status==='Absent'));
+  openWhatsAppForStudents(list,'attendance','Absent');
+}
+function openLeaveWhatsApp(){
+  let today=new Date().toISOString().slice(0,10);
+  let list=db.students.filter(s=>(s.attendance||[]).some(a=>a.date===today&&a.status==='Leave'));
+  openWhatsAppForStudents(list,'attendance','Leave');
+}
+function openPendingFeeWhatsApp(){
+  let list=db.students.filter(s=>(s.fees||[]).some(f=>f.status==='Pending'));
+  openWhatsAppForStudents(list,'fee','Pending Fees');
+}
+function openAllParentsWhatsApp(){
+  openWhatsAppForStudents(db.students,'general','All Parents');
+}
+function deleteTest(studentId,index){
+  let st=db.students.find(x=>x.id===studentId);
+  if(!st||!confirm('Delete this test result?'))return;
+  st.tests.splice(index,1);saveDB();
+}
+function deleteFinance(index){
+  if(!confirm('Delete this finance entry?'))return;
+  db.finance.splice(index,1);saveDB();
+}
+function deleteTeacher(index){
+  if(!confirm('Delete this teacher?'))return;
+  db.teachers.splice(index,1);saveDB();
+}
+
+renderAll();
+void initSupabaseAcademy();
+
+/* ===== SHAHEEN STAR ACADEMY: ADVANCED ACADEMIC SETUP ===== */
+const ACADEMIC_CLASSES=[
+  'Nursery','Prep / KG','Class 1','Class 2','Class 3','Class 4','Class 5','Class 6','Class 7','Class 8',
+  'Class 9 — Science','Class 9 — Arts / Humanities','Class 10 — Science','Class 10 — Arts / Humanities',
+  'First Year — Pre-Medical','First Year — Pre-Engineering','First Year — ICS / Computer Science','First Year — I.Com','First Year — FA / Arts',
+  'Second Year — Pre-Medical','Second Year — Pre-Engineering','Second Year — ICS / Computer Science','Second Year — I.Com','Second Year — FA / Arts',
+  'B.A. — Part 1','B.A. — Part 2','BSCS — Semester 1','BSCS — Semester 2','BSCS — Semester 3','BSCS — Semester 4','BSCS — Semester 5','BSCS — Semester 6','BSCS — Semester 7','BSCS — Semester 8'
+];
+const ACADEMIC_SUBJECTS={
+ 'First Year — Pre-Medical':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Biology','Chemistry','Physics'],
+ 'First Year — Pre-Engineering':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Mathematics','Chemistry','Physics'],
+ 'First Year — ICS / Computer Science':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Mathematics','Physics','Computer Science'],
+ 'First Year — I.Com':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Principles of Accounting','Principles of Economics','Principles of Commerce','Business Mathematics'],
+ 'First Year — FA / Arts':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Civics','Education','Economics','History','Geography'],
+ 'Second Year — Pre-Medical':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Biology','Chemistry','Physics'],
+ 'Second Year — Pre-Engineering':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Mathematics','Chemistry','Physics'],
+ 'Second Year — ICS / Computer Science':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Mathematics','Physics','Computer Science'],
+ 'Second Year — I.Com':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Principles of Accounting','Principles of Economics','Principles of Commerce','Business Mathematics'],
+ 'Second Year — FA / Arts':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Civics','Education','Economics','History','Geography'],
+ 'B.A. — Part 1':['English','Urdu','Islamiyat / Ethics','Pakistan Studies','Education','Economics','Political Science','History','Sociology'],
+ 'B.A. — Part 2':['English','Urdu','Education','Economics','Political Science','History','Sociology','Civics'],
+ 'BSCS — Semester 1':['Programming Fundamentals','Computer Science','Discrete Structures','English','Calculus','Islamic Studies / Ethics'],
+ 'BSCS — Semester 2':['Object Oriented Programming','Data Structures','Digital Logic Design','Communication Skills','Linear Algebra','Pakistan Studies'],
+ 'BSCS — Semester 3':['Database Systems','Operating Systems','Computer Organization & Assembly Language','Probability & Statistics','Technical Writing','Web Development'],
+ 'BSCS — Semester 4':['Software Engineering','Computer Networks','Design & Analysis of Algorithms','Artificial Intelligence','Web Engineering','Technical Communication'],
+ 'BSCS — Semester 5':['Information Security','Theory of Computation','Compiler Construction','Mobile Application Development','Human Computer Interaction','Elective'],
+ 'BSCS — Semester 6':['Machine Learning','Cloud Computing','Information Systems','Software Quality Assurance','Research Methods','Elective'],
+ 'BSCS — Semester 7':['Final Year Project I','Professional Practices','Advanced Database Systems','Elective I','Elective II'],
+ 'BSCS — Semester 8':['Final Year Project II','Internship / Capstone','Elective III','Elective IV']
+};
+const EXTRA_SUBJECTS=[...new Set(Object.values(ACADEMIC_SUBJECTS).flat())];
+const oldSubjects=Array.isArray(db.subjects)?db.subjects:[];
+const oldNames=new Set(oldSubjects.map(x=>typeof x==='string'?x:x.name));
+EXTRA_SUBJECTS.forEach(name=>{if(!oldNames.has(name))oldSubjects.push({name,group:'Higher Education'});});
+db.subjects=oldSubjects;
+db.students=(db.students||[]).map(st=>({...st,attendance:Array.isArray(st.attendance)?st.attendance:[],fees:Array.isArray(st.fees)?st.fees:[],tests:Array.isArray(st.tests)?st.tests:[],className:st.className||'Class 1'}));
+db.leaveRequests=Array.isArray(db.leaveRequests)?db.leaveRequests:[];
+db.holidays=Array.isArray(db.holidays)?db.holidays:[];
+db.notices=Array.isArray(db.notices)?db.notices:[];
+db.settings=db.settings||{academyName:'Shaheen Star Academy',session:'2026-27'};
+
+function ensureAcademicUI(){
+  const nav=document.querySelector('.admin-nav');
+  if(nav&&!document.getElementById('academicNavBtn')){
+    nav.insertAdjacentHTML('beforeend','<button id="academicNavBtn" onclick="adminTab(\'academic\',this)">Academics & Leave</button>');
+  }
+  const dash=document.getElementById('adminDashboard');
+  if(dash&&!document.getElementById('academic')){
+    const el=document.createElement('div');el.id='academic';el.className='admin-page hidden';
+    el.innerHTML=`<h3>🎓 Academics, Classes & Student Leave</h3>
+      <div class="group-card">
+        <div class="group-box"><b>Classes / Programs</b><p style="margin:6px 0">Nursery to Class 10, First Year, Second Year, B.A. and BSCS are pre-configured.</p>
+        <select id="academicClassSelect" style="width:100%;padding:12px;border:1px solid #dbe7f5;border-radius:10px"></select></div>
+        <div class="group-box"><b>Subjects by Program</b><p style="margin:6px 0">Choose a program to view its recommended subjects.</p>
+        <select id="academicProgramSelect" style="width:100%;padding:12px;border:1px solid #dbe7f5;border-radius:10px"></select><div id="programSubjects" style="margin-top:10px"></div></div>
+      </div>
+      <div class="card"><h3>📝 Leave Request</h3><div class="form-grid">
+        <select id="leaveStudent"></select><input id="leaveFrom" type="date"><input id="leaveTo" type="date"><input id="leaveReason" placeholder="Reason for leave">
+        <select id="leaveStatus"><option>Pending</option><option>Approved</option><option>Rejected</option></select><button class="btn primary" onclick="addLeaveRequest()">Save Leave</button>
+      </div><div id="leaveTable"></div></div>
+      <div class="card"><h3>📅 Holidays</h3><div class="form-grid">
+        <input id="holidayDate" type="date"><input id="holidayTitle" placeholder="Holiday / Event name"><button class="btn primary" onclick="addHoliday()">Add Holiday</button>
+      </div><div id="holidayTable"></div></div>
+      <div class="card"><h3>📢 Notices</h3><div class="form-grid">
+        <input id="noticeTitle" placeholder="Notice title"><input id="noticeText" placeholder="Notice details"><button class="btn primary" onclick="addNotice()">Publish Notice</button>
+      </div><div id="noticeTable"></div></div>`;
+    dash.appendChild(el);
+  }
+  populateAcademicUI();
+}
+function populateAcademicUI(){
+  const c=document.getElementById('academicClassSelect'),p=document.getElementById('academicProgramSelect');
+  if(c){c.innerHTML=ACADEMIC_CLASSES.map(x=>`<option>${x}</option>`).join('');}
+  if(p){const programs=Object.keys(ACADEMIC_SUBJECTS);p.innerHTML=programs.map(x=>`<option>${x}</option>`).join('');p.onchange=renderProgramSubjects;if(!p.dataset.ready){p.dataset.ready='1';renderProgramSubjects();}}
+  const ls=document.getElementById('leaveStudent');if(ls)ls.innerHTML=opts(db.students);
+  renderLeaveTables();
+}
+function renderProgramSubjects(){
+  const p=document.getElementById('academicProgramSelect'),box=document.getElementById('programSubjects');
+  if(!p||!box)return;
+  box.innerHTML=(ACADEMIC_SUBJECTS[p.value]||[]).map(x=>`<span style="display:inline-block;background:#eef5ff;border-radius:999px;padding:7px 10px;margin:3px;font-size:12px">${x}</span>`).join('');
+}
+function addLeaveRequest(){
+  const studentId=document.getElementById('leaveStudent')?.value,from=document.getElementById('leaveFrom')?.value,to=document.getElementById('leaveTo')?.value,reason=document.getElementById('leaveReason')?.value.trim(),status=document.getElementById('leaveStatus')?.value;
+  const st=db.students.find(x=>x.id===studentId);
+  if(!st||!from||!to||!reason)return alert('Please complete student, dates and reason.');
+  if(to<from)return alert('Leave end date cannot be before start date.');
+  db.leaveRequests.push({id:'LR-'+Date.now(),studentId,student:st.name,from,to,reason,status});
+  saveDB();document.getElementById('leaveReason').value='';
+}
+function updateLeave(i,status){if(db.leaveRequests[i]){db.leaveRequests[i].status=status;saveDB();}}
+function deleteLeave(i){if(confirm('Delete this leave request?')){db.leaveRequests.splice(i,1);saveDB();}}
+function addHoliday(){
+  const date=document.getElementById('holidayDate')?.value,title=document.getElementById('holidayTitle')?.value.trim();
+  if(!date||!title)return alert('Enter holiday date and name.');
+  db.holidays.push({date,title});saveDB();document.getElementById('holidayTitle').value='';
+}
+function deleteHoliday(i){if(confirm('Delete this holiday?')){db.holidays.splice(i,1);saveDB();}}
+function addNotice(){
+  const title=document.getElementById('noticeTitle')?.value.trim(),text=document.getElementById('noticeText')?.value.trim();
+  if(!title||!text)return alert('Enter notice title and details.');
+  db.notices.unshift({title,text,date:new Date().toISOString().slice(0,10)});saveDB();document.getElementById('noticeTitle').value='';document.getElementById('noticeText').value='';
+}
+function deleteNotice(i){if(confirm('Delete this notice?')){db.notices.splice(i,1);saveDB();}}
+function renderLeaveTables(){
+  const lt=document.getElementById('leaveTable');if(lt)lt.innerHTML='<div class="admin-table"><table><tr><th>Student</th><th>From</th><th>To</th><th>Reason</th><th>Status</th><th>Actions</th></tr>'+db.leaveRequests.map((r,i)=>`<tr><td>${r.student}</td><td>${r.from}</td><td>${r.to}</td><td>${r.reason}</td><td>${r.status}</td><td><button class="success-btn" onclick="updateLeave(${i},'Approved')">Approve</button><button class="danger-btn" onclick="updateLeave(${i},'Rejected')">Reject</button><button class="delBtn" onclick="deleteLeave(${i})">Delete</button></td></tr>`).join('')+'</table></div>';
+  const ht=document.getElementById('holidayTable');if(ht)ht.innerHTML='<div class="admin-table"><table><tr><th>Date</th><th>Holiday / Event</th><th>Action</th></tr>'+db.holidays.map((h,i)=>`<tr><td>${h.date}</td><td>${h.title}</td><td><button class="delBtn" onclick="deleteHoliday(${i})">Delete</button></td></tr>`).join('')+'</table></div>';
+  const nt=document.getElementById('noticeTable');if(nt)nt.innerHTML='<div class="admin-table"><table><tr><th>Date</th><th>Title</th><th>Details</th><th>Action</th></tr>'+db.notices.map((n,i)=>`<tr><td>${n.date}</td><td>${n.title}</td><td>${n.text}</td><td><button class="delBtn" onclick="deleteNotice(${i})">Delete</button></td></tr>`).join('')+'</table></div>';
+}
+const originalRenderAll=renderAll;
+renderAll=function(){originalRenderAll();ensureAcademicUI();renderLeaveTables();};
+const originalMarkAttendance=markAttendance;
+markAttendance=function(){
+  const id=document.getElementById('attendanceStudent')?.value, date=document.getElementById('attendanceDate')?.value, time=document.getElementById('attendanceTime')?.value, status=document.getElementById('attendanceStatus')?.value;
+  const st=db.students.find(x=>x.id===id);
+  if(!st||!date||!time)return alert('Please select student, date and time.');
+  const holiday=db.holidays.find(h=>h.date===date);
+  if(holiday)return alert(`Attendance cannot be marked on holiday: ${holiday.title}`);
+  const existing=st.attendance.find(a=>a.date===date);
+  if(existing){existing.time=time;existing.status=status;}else st.attendance.push({date,time,status});
+  saveDB();
+};
+
+const v3BaseRenderAll=renderAll;
+renderAll=function(){
+  v3BaseRenderAll();
+  const st=document.getElementById('studentTable');
+  if(st){
+    st.querySelectorAll('tbody tr').forEach(()=>{});
+    const tables=st.querySelectorAll('table');
+    if(tables.length){
+      const th=tables[0].querySelector('tr');
+      if(th&&!th.innerHTML.includes('Report'))th.insertAdjacentHTML('beforeend','<th>Report</th>');
+      db.students.forEach(s=>{});
+      const rows=tables[0].querySelectorAll('tr');
+      rows.forEach((r,i)=>{if(i>0){const id=db.students[i-1]?.id;if(id)r.insertAdjacentHTML('beforeend',`<td></td>`);}});
+    }
+  }
+  v3InjectControls();v3RefreshClassFilters();
+};
+
+/* ===== SHAHEEN STAR ACADEMY V3 ===== */
+db.customClasses=Array.isArray(db.customClasses)?db.customClasses:[];
+function v3AllClasses(){return [...new Set([...ACADEMIC_CLASSES,...db.customClasses,...db.students.map(s=>s.className).filter(Boolean)])];}
+function v3ClassOrder(a,b){let x=v3AllClasses(),ia=x.indexOf(a),ib=x.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||String(a).localeCompare(String(b));}
+function v3EnsureStatusFields(){
+  (db.students||[]).forEach(s=>{s.attendance=Array.isArray(s.attendance)?s.attendance:[];s.fees=Array.isArray(s.fees)?s.fees:[];s.tests=Array.isArray(s.tests)?s.tests:[];});
+}
+function v3AddClass(){
+  let el=document.getElementById('v3NewClass'),name=(el?.value||'').trim();
+  if(!name)return alert('Please enter a class / program name.');
+  if(!v3AllClasses().includes(name))db.customClasses.push(name);
+  saveDB(); el.value='';
+}
+function v3Download(filename,content,mime='text/csv'){
+  const blob=new Blob([content],{type:mime+';charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function v3CSV(rows){
+  return rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\n');
+}
+function v3SetAttendance(id,date,status){
+  const s=db.students.find(x=>x.id===id);if(!s)return;
+  date=date||document.getElementById('v3AttDate')?.value||new Date().toISOString().slice(0,10);
+  s.attendance=s.attendance||[];
+  let a=s.attendance.find(x=>x.date===date);
+  if(!a){a={date,time:new Date().toTimeString().slice(0,5),status};s.attendance.push(a)}else{a.status=status;a.time=new Date().toTimeString().slice(0,5)}
+  saveDB();v3RenderAttendance();
+}
+function v3CheckChanged(id){
+  const c=document.getElementById('v3check_'+id),sel=document.getElementById('v3status_'+id);
+  if(sel)sel.classList.toggle('show',!!c?.checked);
+  if(c?.checked&&!sel?.value)sel.value='Present';
+}
+function v3SaveRow(id){
+  const sel=document.getElementById('v3status_'+id),date=document.getElementById('v3AttDate')?.value;
+  if(!sel||!sel.value)return alert('Tick the student first and select attendance status.');
+  v3SetAttendance(id,date,sel.value);
+}
+function v3RenderAttendance(){
+  v3EnsureStatusFields();
+  const box=document.getElementById('attendanceTable');if(!box)return;
+  const date=document.getElementById('v3AttDate')?.value||new Date().toISOString().slice(0,10);
+  const filter=document.getElementById('v3AttClass')?.value||'ALL';
+  let students=db.students.slice().sort((a,b)=>v3ClassOrder(a.className,b.className)||a.name.localeCompare(b.name));
+  if(filter!=='ALL')students=students.filter(s=>s.className===filter);
+  const groups={};students.forEach(s=>(groups[s.className||'Unassigned']??=[]).push(s));
+  let html='';
+  Object.keys(groups).sort(v3ClassOrder).forEach(cls=>{
+    let arr=groups[cls], day=arr.map(s=>(s.attendance||[]).find(a=>a.date===date)).filter(Boolean);
+    let present=day.filter(a=>a.status==='Present').length,absent=day.filter(a=>a.status==='Absent').length,leave=day.filter(a=>a.status==='Leave').length;
+    html+=`<div class="v3-class-title">📚 ${cls} <div class="v3-class-summary"><span class="v3-pill v3-present">✔ Present ${present}</span><span class="v3-pill v3-absent">✖ Absent ${absent}</span><span class="v3-pill v3-leave">🏖 Leave ${leave}</span><span class="v3-pill v3-neutral">👥 Total ${arr.length}</span></div></div>`;
+    html+=`<div class="admin-table v3-att-table"><table><tr><th>#</th><th>Student</th><th>Roll No.</th><th>Attendance</th><th>Current Status</th><th>Save</th></tr>`;
+    arr.forEach((s,i)=>{
+      let rec=(s.attendance||[]).find(a=>a.date===date),st=rec?.status||'';
+      let cls=st==='Present'?'v3-present':st==='Absent'?'v3-absent':st==='Leave'?'v3-leave':'v3-neutral';
+      html+=`<tr class="v3-student-row"><td>${i+1}</td><td class="v3-student-name">${s.name}</td><td>${s.id}</td><td><div class="v3-status-wrap"><input class="v3-check" type="checkbox" id="v3check_${s.id}" onchange="v3CheckChanged('${s.id}')" ${st?'checked':''}><select id="v3status_${s.id}" class="v3-status ${st?'show':''}"><option value="Present" ${st==='Present'?'selected':''}>✔ Present</option><option value="Absent" ${st==='Absent'?'selected':''}>✖ Absent</option><option value="Leave" ${st==='Leave'?'selected':''}>🏖 Leave</option><option value="Half Day" ${st==='Half Day'?'selected':''}>◐ Half Day</option><option value="Late" ${st==='Late'?'selected':''}>⏰ Late</option><option value="Excused" ${st==='Excused'?'selected':''}>✓ Excused</option></select></div></td><td><span class="v3-pill ${cls}">${st||'Not Marked'}</span></td><td><button class="small-btn v3-vvip" onclick="v3SaveRow('${s.id}')">Save</button></td></tr>`;
+    });
+    html+='</table></div>';
+  });
+  box.innerHTML=html||'<div class="v3-panel">No students found.</div>';
+}
+function v3SetFee(id,status){
+  const s=db.students.find(x=>x.id===id);if(!s)return;
+  let fees=s.fees||[], latest=fees.slice().sort((a,b)=>String(b.due).localeCompare(String(a.due)))[0];
+  if(!latest){let amount=prompt('Enter fee amount for '+s.name);if(amount===null)return;latest={amount:Number(amount)||0,due:new Date().toISOString().slice(0,10),status};fees.push(latest)}
+  latest.status=status;s.fees=fees;saveDB();v3RenderFees();
+}
+function v3RenderFees(){
+  const box=document.getElementById('feeTable');if(!box)return;
+  let filter=document.getElementById('v3FeeClass')?.value||'ALL',students=db.students.slice().sort((a,b)=>v3ClassOrder(a.className,b.className)||a.name.localeCompare(b.name));
+  if(filter!=='ALL')students=students.filter(s=>s.className===filter);
+  const groups={};students.forEach(s=>(groups[s.className||'Unassigned']??=[]).push(s));let html='';
+  Object.keys(groups).sort(v3ClassOrder).forEach(cls=>{
+    html+=`<div class="v3-class-title">💳 ${cls}</div><div class="admin-table v3-fee-table"><table><tr><th>#</th><th>Student</th><th>Roll No.</th><th>Latest Fee</th><th>Due Date</th><th>Payment</th></tr>`;
+    groups[cls].forEach((s,i)=>{let f=(s.fees||[]).slice().sort((a,b)=>String(b.due).localeCompare(String(a.due)))[0];let paid=f?.status==='Paid';html+=`<tr><td>${i+1}</td><td class="v3-student-name">${s.name}</td><td>${s.id}</td><td>Rs ${(f?.amount||0).toLocaleString()}</td><td>${f?.due||'—'}</td><td><div class="v3-fee-actions"><button class="v3-paid" onclick="v3SetFee('${s.id}','Paid')">✔ Paid</button><button class="v3-unpaid" onclick="v3SetFee('${s.id}','Pending')">✖ Unpaid</button><span class="v3-pill ${paid?'v3-present':'v3-absent'}">${paid?'PAID':'UNPAID'}</span></div></td></tr>`});html+='</table></div>';
+  });box.innerHTML=html||'No students found.';
+}
+function v3DownloadAttendance(){
+  const date=document.getElementById('v3AttDate')?.value||new Date().toISOString().slice(0,10),rows=[['Shaheen Star Academy','Attendance Report',date],[],['Class','Roll No.','Student','Status','Time','Leaves Total']];
+  db.students.slice().sort((a,b)=>v3ClassOrder(a.className,b.className)||a.name.localeCompare(b.name)).forEach(s=>{let a=(s.attendance||[]).find(x=>x.date===date);rows.push([s.className,s.id,s.name,a?.status||'Not Marked',a?.time||'',(s.attendance||[]).filter(x=>x.status==='Leave').length])});
+  v3Download(`Shaheen_Star_Attendance_${date}.csv`,v3CSV(rows));
+}
+function v3DownloadAttendanceFull(){
+  const rows=[['Class','Roll No.','Student','Date','Time','Status']];
+  db.students.forEach(s=>(s.attendance||[]).forEach(a=>rows.push([s.className,s.id,s.name,a.date,a.time,a.status])));
+  v3Download('Shaheen_Star_Attendance_All_Data.csv',v3CSV(rows));
+}
+function v3DownloadFees(){
+  const rows=[['Class','Roll No.','Student','Amount','Due Date','Status']];
+  db.students.forEach(s=>(s.fees||[]).forEach(f=>rows.push([s.className,s.id,s.name,f.amount,f.due,f.status])));
+  v3Download('Shaheen_Star_Fee_Report.csv',v3CSV(rows));
+}
+function v3DownloadTests(){
+  const rows=[['Class','Roll No.','Student','Test','Subject','Obtained','Total','Percentage']];
+  db.students.forEach(s=>(s.tests||[]).forEach(t=>rows.push([s.className,s.id,s.name,t.name,t.subject,t.marks,t.total,t.total?Math.round(t.marks/t.total*100):0])));
+  v3Download('Shaheen_Star_Tests_Marks_Report.csv',v3CSV(rows));
+}
+function v3DownloadStudentReport(id){
+  const s=db.students.find(x=>x.id===id);if(!s)return;
+  const rows=[['Shaheen Star Academy','Student Report'],['Name',s.name],['Class',s.className],['Roll No.',s.id],[],['ATTENDANCE'],['Date','Time','Status']];
+  (s.attendance||[]).forEach(a=>rows.push([a.date,a.time,a.status]));
+  rows.push([],['TESTS & MARKS'],['Test','Subject','Obtained','Total','Percentage']);
+  (s.tests||[]).forEach(t=>rows.push([t.name,t.subject,t.marks,t.total,t.total?Math.round(t.marks/t.total*100):0]));
+  rows.push([],['FEES'],['Amount','Due Date','Status']);
+  (s.fees||[]).forEach(f=>rows.push([f.amount,f.due,f.status]));
+  v3Download(`Student_${s.id}_Report.csv`,v3CSV(rows));
+}
+function v3InjectControls(){
+  const a=document.getElementById('attendance');
+  if(a&&!document.getElementById('v3AttDate')){
+    const h=a.querySelector('h3');
+    const panel=document.createElement('div');panel.className='v3-panel';panel.innerHTML=`<div class="v3-toolbar"><div><label>Attendance Date</label><input id="v3AttDate" type="date" value="${new Date().toISOString().slice(0,10)}" onchange="v3RenderAttendance()"></div><div><label>Class / Program</label><select id="v3AttClass" onchange="v3RenderAttendance()"><option value="ALL">All Classes — 9, 10, 11, 12, F.A., I.C. & All</option></select></div></div><div class="v3-actionbar"><button class="btn v3-vvip" onclick="v3DownloadAttendance()">⬇ Download Today</button></div>`;
+    h?.after(panel);
+  }
+  const f=document.getElementById('fees');
+  if(f&&!document.getElementById('v3FeeClass')){
+    const h=f.querySelector('h3');const panel=document.createElement('div');panel.className='v3-panel';panel.innerHTML=`<div class="v3-toolbar"><div><label>Class / Program</label><select id="v3FeeClass" onchange="v3RenderFees()"><option value="ALL">All Classes</option></select></div></div><div class="v3-actionbar"><button class="btn v3-vvip" onclick="v3DownloadFees()">⬇ Download Fee Report</button></div>`;h?.after(panel);
+  }
+  const t=document.getElementById('tests');
+  if(t&&!document.getElementById('v3TestDownload')){const h=t.querySelector('h3');const panel=document.createElement('div');panel.className='v3-panel';panel.innerHTML=`<b>📥 Professional Marks Report</b><p class="v3-mini">Download all test results and marks for office records.</p><button id="v3TestDownload" class="btn v3-vvip" onclick="v3DownloadTests()">⬇ Download Tests & Marks</button>`;h?.after(panel);}
+  const s=document.getElementById('students');
+  if(s&&!document.getElementById('v3ClassAdd')){
+    const h=s.querySelector('h3');const panel=document.createElement('div');panel.className='v3-panel';panel.innerHTML=`<b>🎓 Professional Class / Program Setup</b><p class="v3-mini">Class 9 → Class 10 → First Year → Second Year → F.A. → I.Com → B.A. → BSCS. Add any academy class yourself.</p><div class="v3-toolbar"><div><label>New Class / Program</label><input id="v3NewClass" placeholder="e.g. Class 11 — Science"></div><button id="v3ClassAdd" class="btn v3-vvip" onclick="v3AddClass()">＋ Add Class</button></div>`;h?.after(panel);}
+  v3RefreshClassFilters();v3RenderAttendance();v3RenderFees();
+}
+function v3RefreshClassFilters(){
+  ['v3AttClass','v3FeeClass'].forEach(id=>{let e=document.getElementById(id);if(e){let old=e.value||'ALL';e.innerHTML='<option value="ALL">All Classes</option>'+v3AllClasses().sort(v3ClassOrder).map(c=>`<option>${c}</option>`).join('');e.value=v3AllClasses().includes(old)?old:'ALL';}});
+}
+const v3OriginalRenderAll=renderAll;
+renderAll=function(){v3OriginalRenderAll();v3InjectControls();v3RefreshClassFilters();};
+const v3OriginalAddStudent=addStudent;
+addStudent=function(){v3OriginalAddStudent();setTimeout(v3InjectControls,30);};
+
+/* ===== VVIP CLASS 9-12 SUBJECTS / ATTENDANCE ===== */
+const VVIP_CLASS_SUBJECTS={
+  "Class 9 — Science":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Mathematics","Physics","Chemistry","Biology"],
+  "Class 9 — Arts / Humanities":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","General Mathematics","History","Geography","Civics","Education"],
+  "Class 10 — Science":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Mathematics","Physics","Chemistry","Biology"],
+  "Class 10 — Arts / Humanities":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","General Mathematics","History","Geography","Civics","Education"],
+  "Class 11 — Pre-Medical":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Biology","Chemistry","Physics"],
+  "Class 11 — Pre-Engineering":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Mathematics","Chemistry","Physics"],
+  "Class 11 — ICS / Computer Science":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Mathematics","Physics","Computer Science"],
+  "Class 11 — I.Com":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Principles of Accounting","Principles of Economics","Principles of Commerce","Business Mathematics"],
+  "Class 11 — FA / Arts":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Civics","Education","Economics","History","Geography"],
+  "Class 12 — Pre-Medical":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Biology","Chemistry","Physics"],
+  "Class 12 — Pre-Engineering":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Mathematics","Chemistry","Physics"],
+  "Class 12 — ICS / Computer Science":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Mathematics","Physics","Computer Science"],
+  "Class 12 — I.Com":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Principles of Accounting","Principles of Economics","Principles of Commerce","Business Mathematics"],
+  "Class 12 — FA / Arts":["English","Urdu","Islamiyat / Ethics","Pakistan Studies","Civics","Education","Economics","History","Geography"]
+};
+function vvipSubjectsFor(st){
+  const c=String(st.className||"");
+  if(VVIP_CLASS_SUBJECTS[c]) return VVIP_CLASS_SUBJECTS[c];
+  if(/^Class 9\b/i.test(c)) return VVIP_CLASS_SUBJECTS["Class 9 — Science"];
+  if(/^Class 10\b/i.test(c)) return VVIP_CLASS_SUBJECTS["Class 10 — Science"];
+  if(/^Class 11\b/i.test(c)) return VVIP_CLASS_SUBJECTS["Class 11 — Pre-Medical"];
+  if(/^Class 12\b/i.test(c)) return VVIP_CLASS_SUBJECTS["Class 12 — Pre-Medical"];
+  if(c.includes("First Year")) return ACADEMIC_SUBJECTS[c]||EXTRA_SUBJECTS;
+  if(c.includes("Second Year")) return ACADEMIC_SUBJECTS[c]||EXTRA_SUBJECTS;
+  return [...new Set([...(ACADEMIC_SUBJECTS[c]||[]),...EXTRA_SUBJECTS])];
+}
+function vvipSaveSubjects(id){
+  const s=db.students.find(x=>x.id===id); if(!s)return;
+  const box=document.getElementById('vvipSubjects_'+id); if(!box)return;
+  s.subjects=[...box.querySelectorAll('input[type=checkbox]:checked')].map(x=>x.value);
+  saveDB();
+  alert('Subjects saved for '+s.name);
+}
+function vvipRenderSubjects(){
+  const host=document.getElementById('studentSubjectTable'); if(!host)return;
+  const students=(db.students||[]).slice().sort((a,b)=>v3ClassOrder(a.className,b.className)||a.name.localeCompare(b.name));
+  host.innerHTML=`<div class="vvip-subject-panel">
+    <div class="vvip-att-head"><h4>📚 Student Subject Enrollment</h4><span class="v3-pill v3-neutral">✓ = Subject included &nbsp; • &nbsp; ⨯ = Subject not included</span></div>
+    <p class="vvip-subject-note">Class 9, 10, 11 and 12 have proper subject lists. Tick only the subjects that belong to that student; unticked subjects are treated as not included.</p>
+    <div class="vvip-subject-grid">${students.map(s=>{
+      const available=vvipSubjectsFor(s);
+      const selected=new Set(Array.isArray(s.subjects)?s.subjects:available);
+      return `<div class="vvip-subject-student">
+        <div class="vvip-subject-student-head"><b>${s.name}</b><span class="v3-pill v3-neutral">${s.className||'No Class'}</span></div>
+        <div class="vvip-subjects" id="vvipSubjects_${s.id}">
+          ${available.map(sub=>`<label class="vvip-subject"><input type="checkbox" value="${sub.replace(/"/g,'&quot;')}" ${selected.has(sub)?'checked':''}> <span>${sub}</span></label>`).join('')}
+        </div>
+        <button class="vvip-save-subjects" onclick="vvipSaveSubjects('${s.id}')">💾 Save Subjects</button>
+      </div>`;
+    }).join('')}</div>
+  </div>`;
+}
+function vvipRenderAttendance(){
+  v3EnsureStatusFields();
+  const box=document.getElementById('attendanceTable'); if(!box)return;
+  const date=document.getElementById('v3AttDate')?.value||new Date().toISOString().slice(0,10);
+  const filter=document.getElementById('v3AttClass')?.value||'ALL';
+  let students=(db.students||[]).slice().sort((a,b)=>v3ClassOrder(a.className,b.className)||a.name.localeCompare(b.name));
+  if(filter!=='ALL')students=students.filter(s=>s.className===filter);
+  const groups={}; students.forEach(s=>(groups[s.className||'Unassigned']??=[]).push(s));
+  let html='';
+  Object.keys(groups).sort(v3ClassOrder).forEach(cls=>{
+    const arr=groups[cls];
+    const day=arr.map(s=>(s.attendance||[]).find(a=>a.date===date)).filter(Boolean);
+    const present=day.filter(a=>a.status==='Present').length;
+    const absent=day.filter(a=>a.status==='Absent').length;
+    const leave=day.filter(a=>a.status==='Leave').length;
+    html+=`<div class="vvip-class-block">
+      <div class="vvip-class-head"><strong>🎓 ${cls}</strong>
+        <div class="vvip-summary"><span>✔ Present ${present}</span><span>✖ Absent ${absent}</span><span>🏖 Leave ${leave}</span><span>👥 Total ${arr.length}</span></div>
+      </div>
+      <div class="vvip-att-table"><table><thead><tr><th>#</th><th>Student</th><th>Roll No.</th><th>✔ Present</th><th>✖ Absent</th><th>🏖 Leave</th><th>Current Status</th></tr></thead><tbody>`;
+    arr.forEach((s,i)=>{
+      const rec=(s.attendance||[]).find(a=>a.date===date);
+      const st=rec?.status||'';
+      const pill=st==='Present'?'v3-present':st==='Absent'?'v3-absent':st==='Leave'?'v3-leave':'v3-neutral';
+      html+=`<tr><td>${i+1}</td><td class="vvip-student">${s.name}</td><td>${s.id}</td>
+        <td><div class="vvip-status-buttons"><button class="${st==='Present'?'is-present':''}" onclick="vvipSetAttendance('${s.id}','${date}','Present')">✔ Tick</button></div></td>
+        <td><div class="vvip-status-buttons"><button class="${st==='Absent'?'is-absent':''}" onclick="vvipSetAttendance('${s.id}','${date}','Absent')">✖ Cross</button></div></td>
+        <td><div class="vvip-status-buttons"><button class="${st==='Leave'?'is-leave':''}" onclick="vvipSetAttendance('${s.id}','${date}','Leave')">🏖 Leave</button></div></td>
+        <td><span class="v3-pill ${pill}">${st||'Not Marked'}</span></td></tr>`;
+    });
+    html+=`</tbody></table></div></div>`;
+  });
+  box.innerHTML=html||'<div class="v3-panel">No students found.</div>';
+}
+function vvipSetAttendance(id,date,status){
+  const s=db.students.find(x=>x.id===id); if(!s)return;
+  s.attendance=Array.isArray(s.attendance)?s.attendance:[];
+  let a=s.attendance.find(x=>x.date===date);
+  const time=new Date().toTimeString().slice(0,5);
+  if(a){a.status=status;a.time=time;}else{s.attendance.push({date,time,status});}
+  saveDB();
+  vvipRenderAttendance();
+  vvipRenderSubjects();
+}
+/* Replace the V3 attendance renderer with the three-button professional version. */
+if(typeof v3RenderAttendance==='function') v3RenderAttendance=vvipRenderAttendance;
+/* Add the subject enrollment panel and refresh it whenever the database renders. */
+const __vvipOldRenderAll=renderAll;
+renderAll=function(){
+  __vvipOldRenderAll();
+  const studentsPage=document.getElementById('students');
+  if(studentsPage&&!document.getElementById('studentSubjectTable')){
+    const anchor=document.getElementById('subjectTable');
+    const div=document.createElement('div'); div.id='studentSubjectTable';
+    anchor?.after(div);
+  }
+  vvipRenderSubjects();
+  vvipRenderAttendance();
+};
+
+function vvipWaUrl(phone,message){
+  let p=String(phone||'').replace(/[^\d]/g,'');
+  if(!p)return '';
+  if(p.startsWith('0'))p='92'+p.slice(1);
+  if(!p.startsWith('92') && p.length===10)p='92'+p;
+  return 'https://wa.me/'+p+'?text='+encodeURIComponent(message);
+}
+function vvipAbsentMessage(s,date){
+  return `Assalam-o-Alaikum Sir/Madam,
+
+Aap ke bachay ${s.name} ki aaj ${date} ko Shaheen Star Academy mein attendance Absent mark hui hai.
+
+Meherbani farma kar batayein ke bachay ke absent hone ki wajah kya hai.
+
+Thank you,
+Shaheen Star Academy
+✉ Shaheenstaracademy@gmail.com`;
+}
+function vvipFeeMessage(s,fee){
+  return `Assalam-o-Alaikum Sir/Madam,
+
+Aap ke bachay ${s.name} ki Shaheen Star Academy ki fee Rs ${fee.amount} hai jo abhi ${fee.status==='Pending'?'pending':'recorded'} hai${fee.dueDate?' aur due date '+fee.dueDate+' hai.':'.'}
+
+Meherbani farma kar bachay ki fee jald jama karwa dein.
+
+Thank you,
+Shaheen Star Academy
+✉ Shaheenstaracademy@gmail.com`;
+}
+function vvipAddWaToAttendance(){
+  const box=document.getElementById('attendanceTable'); if(!box)return;
+  box.querySelectorAll('tbody tr').forEach(tr=>{
+    const studentCell=tr.querySelector('.vvip-student'); if(!studentCell)return;
+    const name=studentCell.textContent.trim();
+    const s=(db.students||[]).find(x=>x.name===name); if(!s)return;
+    const status=tr.querySelector('td:last-child')?.textContent?.trim()||'';
+    const old=tr.querySelector('.vvip-wa-btn'); if(old)old.remove();
+    if(status==='Absent'){
+      const date=document.getElementById('v3AttDate')?.value||new Date().toISOString().slice(0,10);
+      const cell=tr.lastElementChild;
+      const a=document.createElement('a');
+      a.className='vvip-wa-btn';a.target='_blank';a.rel='noopener';
+      a.textContent='💬 WhatsApp';
+      a.href=vvipWaUrl(s.parentPhone||s.phone,vvipAbsentMessage(s,date));
+      if(a.href.endsWith('wa.me/')){a.removeAttribute('href');a.title='Parent WhatsApp number not available';a.className='vvip-wa-muted';a.textContent='WhatsApp number missing'}
+      cell.appendChild(a);
+    }
+  });
+}
+function vvipRenderFeeActions(){
+  const host=document.getElementById('feeTable'); if(!host)return;
+  const rows=[];
+  (db.students||[]).forEach(s=>{
+    (s.fees||[]).forEach(f=>rows.push({s,f}));
+  });
+  if(!rows.length){host.innerHTML='<div class="v3-panel">No fee records found.</div>';return;}
+  host.innerHTML=`<div class="vvip-fee-table"><table><thead><tr>
+    <th>Student</th><th>Class</th><th>Fee</th><th>Due Date</th><th>Status</th><th>Action</th>
+  </tr></thead><tbody>${rows.map(({s,f})=>{
+    const pending=f.status==='Pending';
+    const wa=pending?vvipWaUrl(s.parentPhone||s.phone,vvipFeeMessage(s,f)):'';
+    return `<tr><td><b>${s.name}</b></td><td>${s.className||'-'}</td><td>Rs ${f.amount}</td><td>${f.dueDate||'-'}</td>
+      <td><span class="v3-pill ${pending?'v3-absent':'v3-present'}">${f.status}</span></td>
+      <td>${pending && wa?`<a class="vvip-wa-btn" href="${wa}" target="_blank" rel="noopener">💬 WhatsApp Reminder</a>`:(pending?'<span class="vvip-wa-muted">Parent WhatsApp missing</span>':'<span class="vvip-wa-muted">✓ No reminder needed</span>')}</td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+const __oldVvipRenderAttendance=vvipRenderAttendance;
+vvipRenderAttendance=function(){
+  __oldVvipRenderAttendance();
+  setTimeout(vvipAddWaToAttendance,0);
+};
+const __oldRenderAllVvip=renderAll;
+renderAll=function(){
+  __oldRenderAllVvip();
+  setTimeout(vvipRenderFeeActions,0);
+};
+
+/* ===== Website Ads & Position Holders ===== */
+function readImageFile(input,targetId){
+  const file=input?.files?.[0]; if(!file)return;
+  const reader=new FileReader();
+  reader.onload=()=>{const el=document.getElementById(targetId);if(el)el.value=reader.result;};
+  reader.readAsDataURL(file);
+}
+function activeAcademyAd(){return (db.ads||[]).find(a=>a.active)||null}
+function renderAcademyAd(){
+  const ad=activeAcademyAd();
+  const modal=document.getElementById('academyAdModal'), banner=document.getElementById('academyAdBanner');
+  if(!modal||!banner)return;
+  if(ad){
+    document.getElementById('academyAdTitle').textContent=ad.title||'Shaheen Star Academy';
+    document.getElementById('academyAdText').textContent=ad.text||'Welcome to Shaheen Star Academy.';
+    const img=document.getElementById('academyAdImage');
+    if(ad.image){img.src=ad.image;img.style.display='block'}else img.style.display='none';
+    const link=document.getElementById('academyAdLink'); link.href=ad.link||'#admissions';
+    banner.style.display='flex'; banner.innerHTML=`📢 <span>${escapeHtml(ad.title||'Academy Announcement')}</span> ${ad.link?`<a href="${ad.link}">View Details</a>`:''}`;
+    if(sessionStorage.getItem('ssa_ad_seen')!=='1'){
+      modal.classList.add('show'); sessionStorage.setItem('ssa_ad_seen','1');
+    }
+  }else{banner.style.display='none';modal.classList.remove('show')}
+}
+function closeAcademyAd(){document.getElementById('academyAdModal')?.classList.remove('show')}
+function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
+function renderPositionHolders(){
+  const list=document.getElementById('positionHoldersPublic'); if(!list)return;
+  const arr=(db.positionHolders||[]).slice().sort((a,b)=>String(a.rank||'').localeCompare(String(b.rank||'')));
+  list.innerHTML=arr.length?arr.map(x=>`<article class="position-card">
+    ${x.photo?`<img class="position-photo" src="${x.photo}" alt="${escapeHtml(x.name)}">`:'<div class="position-photo" style="display:flex;align-items:center;justify-content:center;background:#eef5ff;font-size:45px">🎓</div>'}
+    <span class="position-rank">${escapeHtml(x.rank||'Position Holder')}</span>
+    <h3>${escapeHtml(x.name)}</h3>
+    <p><b>Class:</b> ${escapeHtml(x.className||'-')}</p>
+    <p><b>Roll No:</b> ${escapeHtml(x.roll||'-')}</p>
+    ${x.board?`<p><b>Board:</b> ${escapeHtml(x.board)}</p>`:''}
+    ${x.year?`<p><b>Year:</b> ${escapeHtml(x.year)}</p>`:''}
+    ${x.marks?`<p><b>Marks:</b> ${escapeHtml(x.marks)}</p>`:''}
+  </article>`).join(''):'<div class="card" style="grid-column:1/-1;text-align:center"><h3>Position holders will appear here</h3><p>Admin can add students from the Position Holders panel.</p></div>';
+}
+function saveWebsiteAd(){
+  const title=document.getElementById('adTitle').value.trim(), text=document.getElementById('adText').value.trim(), image=document.getElementById('adImage').value.trim(), link=document.getElementById('adLink').value.trim()||'#admissions';
+  if(!title)return alert('Please enter an ad title.');
+  db.ads=(db.ads||[]).map(a=>({...a,active:false}));
+  db.ads.unshift({id:'AD-'+Date.now(),title,text,image,link,active:true});
+  saveDB(); renderAcademyAd(); renderAdAdmin();
+}
+function disableWebsiteAd(){db.ads=(db.ads||[]).map(a=>({...a,active:false}));saveDB();renderAcademyAd();renderAdAdmin()}
+function deleteWebsiteAd(id){db.ads=(db.ads||[]).filter(a=>a.id!==id);saveDB();renderAcademyAd();renderAdAdmin()}
+function renderAdAdmin(){
+  const el=document.getElementById('adAdminList');if(!el)return;
+  el.innerHTML=(db.ads||[]).map(a=>`<div class="v3-panel"><b>${escapeHtml(a.title)}</b> — ${a.active?'🟢 Active':'⚪ Inactive'}<br><span class="v3-mini">${escapeHtml(a.text||'')}</span><br><button class="small-btn delBtn" onclick="deleteWebsiteAd('${a.id}')">Delete</button></div>`).join('')||'<div class="v3-panel">No ads saved.</div>';
+}
+function addPositionHolder(){
+  const name=document.getElementById('posName').value.trim(),rank=document.getElementById('posRank').value.trim(),roll=document.getElementById('posRoll').value.trim(),className=document.getElementById('posClass').value.trim(),photo=document.getElementById('posPhoto').value.trim();
+  if(!name||!rank||!roll)return alert('Student name, position and roll number are required.');
+  db.positionHolders=db.positionHolders||[];
+  db.positionHolders.push({id:'POS-'+Date.now(),name,rank,roll,className,cls:className,photo,board:'',year:'',marks:''});
+  ['posName','posClass','posRoll','posRank','posPhoto'].forEach(id=>document.getElementById(id).value='');
+  saveDB();renderPositionHolders();renderPositionAdmin();
+}
+function deletePositionHolder(id){db.positionHolders=(db.positionHolders||[]).filter(x=>x.id!==id);saveDB();renderPositionHolders();renderPositionAdmin()}
+function renderPositionAdmin(){
+  const el=document.getElementById('positionAdminList');if(!el)return;
+  el.innerHTML=(db.positionHolders||[]).map(x=>`<div class="v3-panel"><b>${escapeHtml(x.rank)}</b> — ${escapeHtml(x.name)} | Roll No: ${escapeHtml(x.roll)} | ${escapeHtml(x.className||'-')} <button class="small-btn delBtn" onclick="deletePositionHolder('${x.id}')">Delete</button></div>`).join('')||'<div class="v3-panel">No position holders added.</div>';
+}
+/* Keep the existing V3 rendering/database flow and refresh the new modules with it. */
+const __ssaFinalRenderAll=renderAll;
+renderAll=function(){__ssaFinalRenderAll();setTimeout(()=>{renderAcademyAd();renderPositionHolders();renderAdAdmin();renderPositionAdmin()},0)};
+window.addEventListener('load',()=>setTimeout(()=>{renderAcademyAd();renderPositionHolders()},500));
+
+
+/* ===== FINAL USER REQUEST OVERRIDES ===== */
+function renderHeroAdSlot(){
+  const el=document.getElementById('heroAdSlot'); if(!el)return;
+  const ad=activeAcademyAd();
+  if(!ad){el.style.display='none';el.innerHTML='';return;}
+  el.style.display='flex';
+  el.innerHTML=`${ad.image?`<img src="${ad.image}" alt="Academy Ad">`:''}<span>${escapeHtml(ad.text||'')||'Latest academy announcement'}</span></div>${ad.link?`<a href="${ad.link}">Open</a>`:''}`;
+}
+const __oldRenderAcademyAdFinal=renderAcademyAd;
+renderAcademyAd=function(){__oldRenderAcademyAdFinal();renderHeroAdSlot();};
+
+/* Tick = Absent. WhatsApp appears immediately; one button saves all attendance at once. */
+function v3CheckChanged(id){
+  const c=document.getElementById('v3check_'+id),sel=document.getElementById('v3status_'+id),wa=document.getElementById('v3wa_'+id);
+  if(c?.checked){ if(sel){sel.value='Absent';sel.classList.add('show');} if(wa)wa.style.display='inline-flex'; }
+  else { if(sel){sel.classList.remove('show');} if(wa)wa.style.display='none'; }
+  v3UpdateBulkCount();
+}
+function v3UpdateBulkCount(){
+  const box=document.getElementById('v3BulkCount'); if(!box)return;
+  const n=[...document.querySelectorAll('.v3-check')].filter(x=>x.checked).length;
+  box.textContent=`${n} selected`;
+}
+function v3BulkSaveAttendance(){
+  const date=document.getElementById('v3AttDate')?.value;
+  if(!date)return alert('Please select attendance date.');
+  const holiday=db.holidays.find(h=>h.date===date);
+  if(holiday)return alert(`Attendance cannot be marked on holiday: ${holiday.title}`);
+  const rows=[...document.querySelectorAll('.v3-student-row')]; let count=0;
+  rows.forEach(row=>{
+    const cb=row.querySelector('.v3-check'); if(!cb)return;
+    const id=cb.id.replace('v3check_',''); const st=db.students.find(x=>x.id===id); if(!st)return;
+    const sel=document.getElementById('v3status_'+id);
+    if(cb.checked){
+      st.attendance=Array.isArray(st.attendance)?st.attendance:[];
+      let a=st.attendance.find(x=>x.date===date);
+      if(!a){a={date,time:new Date().toTimeString().slice(0,5),status:'Absent'};st.attendance.push(a)}
+      a.status=sel?.value||'Absent';a.time=new Date().toTimeString().slice(0,5);count++;
+    }
+  });
+  saveDB(); v3RenderAttendance(); alert(`Attendance saved successfully for ${count} selected student(s).`);
+}
+function v3RenderAttendanceFinal(){
+  v3EnsureStatusFields();
+  const box=document.getElementById('attendanceTable');if(!box)return;
+  const date=document.getElementById('v3AttDate')?.value||new Date().toISOString().slice(0,10);
+  const filter=document.getElementById('v3AttClass')?.value||'ALL';
+  let students=db.students.slice().sort((a,b)=>v3ClassOrder(a.className,b.className)||a.name.localeCompare(b.name));
+  if(filter!=='ALL')students=students.filter(s=>s.className===filter);
+  const groups={};students.forEach(s=>(groups[s.className||'Unassigned']??=[]).push(s));
+  let html=`<div class="v3-bulkbar"><b>📋 Mark Attendance</b><span id="v3BulkCount">0 selected</span><button class="btn primary" type="button" onclick="v3BulkSaveAttendance()">💾 Save All Attendance</button><button class="btn secondary" type="button" onclick="v3MarkAllAbsent()">☑ Mark All Absent</button><button class="btn secondary" type="button" onclick="v3ClearAttendanceTicks()">Clear Ticks</button></div>`;
+  Object.keys(groups).sort(v3ClassOrder).forEach(cls=>{
+    let arr=groups[cls],day=arr.map(s=>(s.attendance||[]).find(a=>a.date===date)).filter(Boolean);
+    let present=day.filter(a=>a.status==='Present').length,absent=day.filter(a=>a.status==='Absent').length,leave=day.filter(a=>a.status==='Leave').length;
+    html+=`<div class="v3-class-title">📚 ${escapeHtml(cls)} <div class="v3-class-summary"><span class="v3-pill v3-present">✔ Present ${present}</span><span class="v3-pill v3-absent">✖ Absent ${absent}</span><span class="v3-pill v3-leave">🏖 Leave ${leave}</span><span class="v3-pill v3-neutral">👥 Total ${arr.length}</span></div></div>`;
+    html+=`<div class="admin-table v3-att-table"><table><tr><th>#</th><th>Student</th><th>Roll No.</th><th>Absent</th><th>Current Status</th><th>WhatsApp</th></tr>`;
+    arr.forEach((st,i)=>{
+      let rec=(st.attendance||[]).find(a=>a.date===date),status=rec?.status||'';
+      let checked=status==='Absent'||status==='Leave', pill=status==='Present'?'v3-present':status==='Absent'?'v3-absent':status==='Leave'?'v3-leave':'v3-neutral';
+      html+=`<tr class="v3-student-row"><td>${i+1}</td><td class="v3-student-name">${escapeHtml(st.name)}</td><td>${escapeHtml(st.id)}</td><td><input class="v3-check" type="checkbox" id="v3check_${st.id}" onchange="v3CheckChanged('${st.id}')" ${checked?'checked':''} aria-label="Mark ${escapeHtml(st.name)} absent"></td><td><select id="v3status_${st.id}" class="v3-status ${checked?'show':''}"><option value="Absent" ${status==='Absent'?'selected':''}>✖ Absent</option><option value="Leave" ${status==='Leave'?'selected':''}>🏖 Leave</option><option value="Present" ${status==='Present'?'selected':''}>✔ Present</option></select><span class="v3-pill ${pill}">${escapeHtml(status||'Not Marked')}</span></td><td><span id="v3wa_${st.id}" class="v3-wa-row" style="display:${(status==='Absent'||status==='Leave')?'inline-flex':'none'}">${st.phone?`<button class="msg-btn" onclick="openStudentWhatsApp('${st.id}','attendance')">WhatsApp</button>`:'<span class="v3-mini">No WhatsApp</span>'}</span></td></tr>`;
+    });
+    html+='</table></div>';
+  });
+  box.innerHTML=html||'<div class="v3-panel">No students found.</div>';v3UpdateBulkCount();
+}
+function v3MarkAllAbsent(){document.querySelectorAll('.v3-check').forEach(c=>{c.checked=true;v3CheckChanged(c.id.replace('v3check_',''));});}
+function v3ClearAttendanceTicks(){document.querySelectorAll('.v3-check').forEach(c=>{c.checked=false;v3CheckChanged(c.id.replace('v3check_',''));});}
+v3RenderAttendance=v3RenderAttendanceFinal;
+
+/* ===== SHAHEEN STAR ACADEMY PWA / INSTALLABLE SOFTWARE ===== */
+let ssaDeferredInstallPrompt=null;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();ssaDeferredInstallPrompt=e;showInstallButtons(true);});
+window.addEventListener('appinstalled',()=>{ssaDeferredInstallPrompt=null;showInstallButtons(false);alert('Shaheen Star Academy Software installed successfully. You can open it from your computer Start Menu/Desktop.');});
+function showInstallButtons(show){
+  ['installAppBtn','installCardBtn'].forEach(id=>{const b=document.getElementById(id);if(b)b.style.display=show?'inline-flex':'none';});
+}
+async function installAcademyApp(){
+  if(ssaDeferredInstallPrompt){ssaDeferredInstallPrompt.prompt();const r=await ssaDeferredInstallPrompt.userChoice;ssaDeferredInstallPrompt=null;showInstallButtons(false);return;}
+  if(window.matchMedia('(display-mode: standalone)').matches){alert('Software is already installed/opening as an app.');return;}
+  alert('Chrome میں اوپر address bar کے دائیں طرف Install icon (⊕/computer icon) دبائیں، پھر Install کریں۔ اگر icon نظر نہ آئے تو Chrome menu ⋮ → Cast, save and share → Install page as app منتخب کریں۔');
+}
+function downloadOfflineCopy(){
+  try{
+    const clone=document.documentElement.cloneNode(true);
+    clone.querySelectorAll('script[src]').forEach(x=>x.remove());
+    const blob=new Blob(['<!doctype html>\n'+clone.outerHTML],{type:'text/html;charset=utf-8'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Shaheen-Star-Academy-Offline.html';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Offline copy could not be created. Please use Install Software instead.');}
+}
+if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));}
+
+/* =========================================================
+   SHAHEEN STAR ACADEMY — CLASS-WISE ADMIN SYSTEM
+   Classes are isolated: Class 9, Class 10, FCS, Class 11,
+   and Class 12. Each class has separate students, teachers,
+   WhatsApp group link, and message history.
+   ========================================================= */
+
+(function () {
+  "use strict";
+
+  const SSA_CLASSES = [
+    { key: "class9",  name: "Class 9"  },
+    { key: "class10", name: "Class 10" },
+    { key: "fcs",     name: "FCS"      },
+    { key: "class11", name: "Class 11" },
+    { key: "class12", name: "Class 12" }
+  ];
+
+  function ssaClassKey(value) {
+    const v = String(value || "").trim().toLowerCase();
+    if (!v) return "";
+    if (/\b9(th)?\b|\bclass\s*9\b/.test(v)) return "class9";
+    if (/\b10(th)?\b|\bclass\s*10\b/.test(v)) return "class10";
+    if (/\bf\.?c\.?s\.?\b|\bfcs\b/.test(v)) return "fcs";
+    if (/\b11(th)?\b|\bclass\s*11\b/.test(v) || /first\s*year/.test(v)) return "class11";
+    if (/\b12(th)?\b|\bclass\s*12\b/.test(v) || /second\s*year/.test(v)) return "class12";
+    return v.replace(/[^a-z0-9]+/g, "_");
+  }
+
+  function ssaClassName(key) {
+    const item = SSA_CLASSES.find(c => c.key === key);
+    return item ? item.name : key;
+  }
+
+  function ssaEnsureClassSystems() {
+    if (!window.db) return;
+    if (!db.classSystems || typeof db.classSystems !== "object") {
+      db.classSystems = {};
+    }
+
+    SSA_CLASSES.forEach(c => {
+      if (!db.classSystems[c.key] || typeof db.classSystems[c.key] !== "object") {
+        db.classSystems[c.key] = {
+          whatsappGroupLink: "",
+          students: [],
+          teachers: [],
+          messages: []
+        };
+      }
+
+      const system = db.classSystems[c.key];
+      if (!Array.isArray(system.students)) system.students = [];
+      if (!Array.isArray(system.teachers)) system.teachers = [];
+      if (!Array.isArray(system.messages)) system.messages = [];
+      if (typeof system.whatsappGroupLink !== "string") system.whatsappGroupLink = "";
+    });
+  }
+
+  function ssaClassStudents(key) {
+    const className = ssaClassName(key);
+    const base = Array.isArray(db?.students) ? db.students : [];
+
+    // Existing academy students are filtered strictly by class.
+    const existing = base.filter(s => ssaClassKey(s.className) === key);
+
+    // Also support records created directly inside classSystems.
+    const local = Array.isArray(db?.classSystems?.[key]?.students)
+      ? db.classSystems[key].students
+      : [];
+
+    const ids = new Set(existing.map(s => String(s.id || s.roll || s.name || "")));
+    return existing.concat(local.filter(s => !ids.has(String(s.id || s.roll || s.name || ""))));
+  }
+
+  function ssaClassTeachers(key) {
+    const base = Array.isArray(db?.teachers) ? db.teachers : [];
+    const existing = base.filter(t => ssaClassKey(t.className) === key);
+    const local = Array.isArray(db?.classSystems?.[key]?.teachers)
+      ? db.classSystems[key].teachers
+      : [];
+
+    const ids = new Set(existing.map(t => String(t.id || t.name || "")));
+    return existing.concat(local.filter(t => !ids.has(String(t.id || t.name || ""))));
+  }
+
+  function ssaSave() {
+    try {
+      if (typeof window.saveDB === "function") window.saveDB();
+      else if (typeof window.supabaseSave === "function") window.supabaseSave();
+      else if (typeof window.renderAll === "function") window.renderAll();
+    } catch (e) {
+      console.error("SSA class-wise save error:", e);
+    }
+  }
+
+  window.SSA_CLASSES = SSA_CLASSES;
+  window.ssaClassKey = ssaClassKey;
+  window.ssaEnsureClassSystems = ssaEnsureClassSystems;
+  window.ssaClassStudents = ssaClassStudents;
+  window.ssaClassTeachers = ssaClassTeachers;
+
+  // Public functions for the class-wise UI.
+  window.ssaStudentAdd = function (key) {
+    ssaEnsureClassSystems();
+    const name = prompt("Student Name:");
+    if (!name || !name.trim()) return;
+
+    const roll = prompt("Roll Number:");
+    const parent = prompt("Parent Name:");
+    const whatsapp = prompt("Parent WhatsApp Number:");
+
+    const cleanRoll = String(roll || "").trim();
+    const students = ssaClassStudents(key);
+
+    if (cleanRoll && students.some(s => String(s.roll || "").trim() === cleanRoll)) {
+      alert("This roll number already exists in this class.");
+      return;
+    }
+
+    const student = {
+      id: "SSA-" + key + "-" + Date.now(),
+      name: name.trim(),
+      roll: cleanRoll,
+      parentName: String(parent || "").trim(),
+      parentWhatsapp: String(whatsapp || "").trim(),
+      className: ssaClassName(key)
+    };
+
+    if (!Array.isArray(db.students)) db.students = [];
+    db.students.push(student);
+    ssaSave();
+  };
+
+  window.ssaStudentDelete = function (key, id) {
+    if (!confirm("Delete this student from this class?")) return;
+
+    if (Array.isArray(db.students)) {
+      db.students = db.students.filter(s => String(s.id) !== String(id));
+    }
+
+    if (Array.isArray(db?.classSystems?.[key]?.students)) {
+      db.classSystems[key].students =
+        db.classSystems[key].students.filter(s => String(s.id) !== String(id));
+    }
+
+    ssaSave();
+  };
+
+  window.ssaTeacherAdd = function (key) {
+    ssaEnsureClassSystems();
+    const name = prompt("Teacher Name:");
+    if (!name || !name.trim()) return;
+
+    const subject = prompt("Subject:");
+    const whatsapp = prompt("Teacher WhatsApp Number:");
+
+    const teacher = {
+      id: "SSA-T-" + key + "-" + Date.now(),
+      name: name.trim(),
+      subject: String(subject || "").trim(),
+      whatsapp: String(whatsapp || "").trim(),
+      className: ssaClassName(key)
+    };
+
+    if (!Array.isArray(db.teachers)) db.teachers = [];
+    db.teachers.push(teacher);
+    ssaSave();
+  };
+
+  window.ssaTeacherDelete = function (key, id) {
+    if (!confirm("Delete this teacher from this class?")) return;
+
+    if (Array.isArray(db.teachers)) {
+      db.teachers = db.teachers.filter(t => String(t.id) !== String(id));
+    }
+
+    if (Array.isArray(db?.classSystems?.[key]?.teachers)) {
+      db.classSystems[key].teachers =
+        db.classSystems[key].teachers.filter(t => String(t.id) !== String(id));
+    }
+
+    ssaSave();
+  };
+
+  window.ssaSaveGroupLink = function (key) {
+    ssaEnsureClassSystems();
+    const current = db.classSystems[key]?.whatsappGroupLink || "";
+    const link = prompt("WhatsApp Group Link:", current);
+    if (link === null) return;
+
+    const value = link.trim();
+    if (value && !/^https?:\/\//i.test(value)) {
+      alert("Please enter a complete WhatsApp group link starting with https://");
+      return;
+    }
+
+    db.classSystems[key].whatsappGroupLink = value;
+    ssaSave();
+    alert("WhatsApp group link saved.");
+  };
+
+  window.ssaOpenGroup = function (key) {
+    const link = db?.classSystems?.[key]?.whatsappGroupLink || "";
+    if (!link) {
+      alert("First add and save the WhatsApp group link for this class.");
+      return;
+    }
+    window.open(link, "_blank", "noopener,noreferrer");
+  };
+
+  window.ssaSendMessage = function (key) {
+    ssaEnsureClassSystems();
+
+    const message = prompt(
+      "Write the WhatsApp message for " + ssaClassName(key) + ":"
+    );
+    if (!message || !message.trim()) return;
+
+    db.classSystems[key].messages.unshift({
+      id: "SSA-M-" + Date.now(),
+      text: message.trim(),
+      createdAt: new Date().toISOString()
+    });
+
+    db.classSystems[key].messages =
+      db.classSystems[key].messages.slice(0, 30);
+
+    ssaSave();
+
+    // Browser limitation: WhatsApp does not allow a normal website
+    // to silently post into a group. This opens WhatsApp with text ready.
+    const url = "https://wa.me/?text=" + encodeURIComponent(message.trim());
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  window.ssaClassAttendanceSummary = function (key) {
+    const students = ssaClassStudents(key);
+    const today = new Date().toISOString().slice(0, 10);
+
+    let present = 0, absent = 0, leave = 0;
+
+    students.forEach(student => {
+      const attendance = Array.isArray(student.attendance)
+        ? student.attendance
+        : [];
+
+      const record = attendance.find(a => {
+        const date = String(a.date || "").slice(0, 10);
+        return date === today;
+      });
+
+      const status = String(record?.status || "").toLowerCase();
+
+      if (status === "present" || status === "p") present++;
+      else if (status === "absent" || status === "a") absent++;
+      else if (status === "leave" || status === "l") leave++;
+    });
+
+    return { total: students.length, present, absent, leave };
+  };
+
+  // Initialize only after DB exists.
+  function ssaInitClassSystems() {
+    if (!window.db) {
+      setTimeout(ssaInitClassSystems, 250);
+      return;
+    }
+    ssaEnsureClassSystems();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ssaInitClassSystems);
+  } else {
+    ssaInitClassSystems();
+  }
+})();
